@@ -1,0 +1,20 @@
+services:
+  mx925-scan:
+    build: .
+    image: mx925-scan:latest
+    container_name: mx925-scan
+    restart: unless-stopped
+    # BJNP (UDP/TCP 8612) incl. broadcast - host networking is the least trouble
+    network_mode: host
+    environment:
+      SCANNER_IP: 192.168.1.50          # IP of the printer (use a DHCP reservation)
+      # SCANNER_DEVICE: "pixma:MX920_192.168.1.50"  # optional, auto-detected otherwise
+      # BJNP_TIMEOUT: "30000"           # ms, default 30000
+      OUTPUT_DIR: /output
+      PUID: 1000                        # UID/GID of the paperless user
+      PGID: 1000
+      TZ: Europe/Berlin
+      LOG_LEVEL: INFO                   # DEBUG while setting up
+    volumes:
+      - ./config:/config
+      - /srv/paperless/consume:/output  # your paperless consume directory

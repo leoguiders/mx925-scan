@@ -1,0 +1,108 @@
+# Re-read on every scan - changes take effect without a restart.
+
+defaults:
+  mode: Color              # Color | Gray | Lineart
+  resolution: 300
+  source: auto             # auto | flatbed | adf | duplex
+  duplex: false            # overridden by the printer (byte-09, see below)
+  skip_blank: true         # drop blank pages
+  blank_threshold: 0.003   # raise (e.g. 0.01) if back sides show through
+  duplex_rotate_back: 0    # 180 if back sides come out upside down
+  page_rotate: 0           # rotate all pages (90/180/270, counter-clockwise)
+  format: pdf              # pdf | tiff (multi-page) | jpeg | png (one per page)
+  jpeg_quality: 85         # for PDF and JPEG pages
+  unsharp_mask: false      # sharpening (set from the panel, see below)
+  unsharp_radius: 2
+  unsharp_percent: 80
+  unsharp_threshold: 3
+  reduce_bleed: false      # reduce show-through (set from the panel)
+  bleed_threshold: 210     # lower = stronger (light tones -> white)
+  descreen: false          # moiré reduction (set from the panel)
+  descreen_radius: 1.0     # relative to 300 dpi; higher = softer
+  filename: "scan_%Y-%m-%d_%H-%M-%S"
+  subdir: ""               # subfolder in the consume dir (-> paperless tag)
+  page_width: 210          # scan area in mm (set from the panel, see below)
+  page_height: 297         # leave empty = maximum area (e.g. long pages)
+  auto_crop: false         # crop to content (panel: auto scan size)
+  auto_crop_threshold: 225 # lower if light background gets included
+  auto_crop_margin: 2      # margin in mm
+  extra_args: []           # additional scanimage arguments
+
+# Start buttons on the printer
+buttons:
+  button-1: { mode: Color }   # colour
+  button-2: { mode: Gray }    # black
+
+# Map operation panel settings to scan settings.
+# Besides the SANE values (scan-resolution ...) individual bytes of the raw
+# event packet can be matched: byte-XX (XX = hex offset, as shown in the log
+# line "Event packet: ..."). Later rules override earlier ones.
+rules:
+  # Resolution (the MX925 reports an index instead of dpi)
+  - when: { scan-resolution: 1 }
+    set:  { resolution: 75 }
+  - when: { scan-resolution: 2 }
+    set:  { resolution: 150 }
+  - when: { scan-resolution: 3 }
+    set:  { resolution: 300 }
+  - when: { scan-resolution: 4 }
+    set:  { resolution: 600 }
+  # Source (byte 0x08: 01 = flatbed, 02 = ADF)
+  - when: { byte-08: 1 }
+    set:  { source: flatbed }
+  - when: { byte-08: 2 }
+    set:  { source: adf }
+  # Duplex (byte 0x09: 00 = flatbed, 01 = simplex, 02 = duplex)
+  - when: { byte-09: 1 }
+    set:  { duplex: false }
+  - when: { byte-09: 2 }
+    set:  { duplex: true }
+  # Binding (byte 0x11: 01 = long edge, 02 = short edge)
+  # The MX925 always delivers back sides rotated by 180°
+  - when: { byte-11: 1 }
+    set:  { duplex_rotate_back: 180 }
+  - when: { byte-11: 2 }
+    set:  { duplex_rotate_back: 0 }
+  # Scan size (byte 0x0a)
+  - when: { byte-0a: 1 }        # A4
+    set:  { page_width: 210, page_height: 297 }
+  - when: { byte-0a: 2 }        # Letter
+    set:  { page_width: 215.9, page_height: 279.4 }
+  - when: { byte-0a: 3 }        # Legal (ADF only)
+    set:  { page_width: 215.9, page_height: 355.6 }
+  - when: { byte-0a: 8 }        # 10x15 cm
+    set:  { page_width: 100, page_height: 150 }
+  - when: { byte-0a: 9 }        # 13x18 cm
+    set:  { page_width: 130, page_height: 180 }
+  - when: { byte-0a: 11 }       # 0x0b = auto scan
+    set:  { page_width: null, page_height: null, auto_crop: true }
+  # ADF orientation (byte 0x10: 00 = flatbed, 01 = portrait, 02 = landscape)
+  # Landscape: rotate pages by 90° - use 270 if the result is upside down
+  - when: { byte-10: 1 }
+    set:  { page_rotate: 0 }
+  - when: { byte-10: 2 }
+    set:  { page_rotate: 90 }
+  # File format (byte 0x0b: 01 = JPEG, 02 = TIFF, 03 = PDF, 04 = compact PDF)
+  - when: { byte-0b: 1 }
+    set:  { format: jpeg }
+  - when: { byte-0b: 2 }
+    set:  { format: tiff }
+  - when: { byte-0b: 3 }
+    set:  { format: pdf }
+  - when: { byte-0b: 4 }
+    set:  { format: pdf, jpeg_quality: 50 }
+  # Reduce show-through (byte 0x0d: 01 = off, 02 = on)
+  - when: { byte-0d: 1 }
+    set:  { reduce_bleed: false }
+  - when: { byte-0d: 2 }
+    set:  { reduce_bleed: true }
+  # Reduce moiré (byte 0x0e: 01 = off, 02 = on)
+  - when: { byte-0e: 1 }
+    set:  { descreen: false }
+  - when: { byte-0e: 2 }
+    set:  { descreen: true }
+  # Unsharp mask (byte 0x0f: 01 = off, 02 = on)
+  - when: { byte-0f: 1 }
+    set:  { unsharp_mask: false }
+  - when: { byte-0f: 2 }
+    set:  { unsharp_mask: true }

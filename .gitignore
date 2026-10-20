@@ -1,0 +1,4 @@
+# Local runtime config (created from config.yaml on first start)
+config/
+__pycache__/
+*.pyc
