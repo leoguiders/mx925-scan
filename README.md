@@ -32,6 +32,30 @@ To check connectivity:
 docker compose exec mx925-scan scanimage -L
 ```
 
+### Prebuilt image
+
+Images for `linux/amd64` and `linux/arm64` are published to the GitHub Container Registry by the workflow in `.github/workflows/release.yml`:
+
+| Tag | Built from |
+|---|---|
+| `latest`, `1.2.3`, `1.2` | release tags `v1.2.3` |
+| `edge` | every push to `main` |
+
+To use a prebuilt image instead of building locally, replace `build: .` in `docker-compose.yml`:
+
+```yaml
+    image: ghcr.io/<owner>/mx925-scan:latest
+```
+
+Then run `docker compose pull && docker compose up -d`.
+
+To publish a release:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
 ## Configuration
 
 ### Environment variables
