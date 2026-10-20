@@ -98,6 +98,7 @@ Main settings:
 | `jpeg_quality` | JPEG quality for PDF and JPEG output |
 | `skip_blank`, `blank_threshold` | drop blank pages |
 | `unsharp_mask`, `unsharp_*` | sharpening |
+| `whiten_background`, `background_margin` | make the paper background white; the background level is measured per page (median brightness), so grey or yellowed paper works too. Off for photo sizes. |
 | `reduce_bleed`, `bleed_threshold` | show-through reduction (light tones → white) |
 | `descreen`, `descreen_radius` | moiré / halftone reduction |
 | `filename` | strftime pattern for the output file name |

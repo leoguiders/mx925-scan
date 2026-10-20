@@ -296,6 +296,33 @@ def auto_crop(img, dpi, threshold=225, margin_mm=2.0):
     return img.crop(box)
 
 
+def whiten_background(img, margin=12.0):
+    """Make the paper background pure white.
+
+    The background level is measured per page: on documents most of the area
+    is paper, so the median brightness is a good estimate. Everything at or
+    above (background - margin) becomes white, darker tones are stretched
+    linearly. Grey or yellowed paper ends up white, text stays dark.
+    Pages that are mostly dark (photos) are left untouched.
+    """
+    g = ImageOps.grayscale(img)
+    g.thumbnail((600, 600))
+    hist = g.histogram()
+    total = sum(hist)
+    acc, median = 0, 255
+    for v, n in enumerate(hist):
+        acc += n
+        if acc >= total / 2:
+            median = v
+            break
+    if median < 128:
+        LOG.debug("Background too dark (%d) - not whitened", median)
+        return img
+    t = max(128, min(254, int(median - margin)))
+    lut = [min(255, v * 255 // t) for v in range(256)]
+    return img.point(lut * len(img.getbands()))
+
+
 def prepare_pages(pages, s, duplex):
     """Load pages, rotate, drop blank pages and apply image corrections."""
     rotate = int(s.get("duplex_rotate_back") or 0) if duplex else 0
@@ -322,6 +349,8 @@ def prepare_pages(pages, s, duplex):
             r = float(s.get("descreen_radius", 1.0)) * int(s["resolution"]) / 300
             if r >= 0.3:
                 img = img.filter(ImageFilter.GaussianBlur(r))
+        if s.get("whiten_background") and img.mode != "1":
+            img = whiten_background(img, float(s.get("background_margin", 12)))
         if s.get("reduce_bleed") and img.mode != "1":
             # Levels: everything lighter than 'bleed_threshold' becomes white,
             # the rest is stretched linearly (text stays dark)
