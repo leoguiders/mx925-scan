@@ -39,6 +39,9 @@ RETRY_DELAY = float(os.environ.get("RETRY_DELAY", "10"))
 RETRIES = int(os.environ.get("RETRIES", "2"))
 IO_ERRORS = ("Error during device I/O", "Can not connect", "sane_read: Invalid argument",
              "sane_start: Invalid argument")
+# Reopen the idle polling connection periodically (seconds, 0 = never) in
+# case the printer silently drops the session, e.g. after power saving
+RECONNECT_INTERVAL = float(os.environ.get("RECONNECT_INTERVAL", "1800"))
 PUID = os.environ.get("PUID")
 PGID = os.environ.get("PGID")
 HEARTBEAT = Path("/tmp/heartbeat")
@@ -305,22 +308,26 @@ def whiten_background(img, margin=12.0):
     linearly. Grey or yellowed paper ends up white, text stays dark.
     Pages that are mostly dark (photos) are left untouched.
     """
-    g = ImageOps.grayscale(img)
-    g.thumbnail((600, 600))
-    hist = g.histogram()
-    total = sum(hist)
-    acc, median = 0, 255
-    for v, n in enumerate(hist):
-        acc += n
-        if acc >= total / 2:
-            median = v
-            break
-    if median < 128:
-        LOG.debug("Background too dark (%d) - not whitened", median)
+    small = img.copy()
+    small.thumbnail((600, 600))
+
+    def median(hist):
+        total, acc = sum(hist), 0
+        for v, n in enumerate(hist):
+            acc += n
+            if acc >= total / 2:
+                return v
+        return 255
+
+    if median(ImageOps.grayscale(small).histogram()) < 128:
+        LOG.debug("Background too dark - not whitened")
         return img
-    t = max(128, min(254, int(median - margin)))
-    lut = [min(255, v * 255 // t) for v in range(256)]
-    return img.point(lut * len(img.getbands()))
+    # One curve per colour channel, so yellowed paper becomes neutral white
+    lut = []
+    for band in small.split():
+        t = max(128, min(254, int(median(band.histogram()) - margin)))
+        lut += [min(255, v * 255 // t) for v in range(256)]
+    return img.point(lut)
 
 
 def prepare_pages(pages, s, duplex):
@@ -528,12 +535,18 @@ def main():
 
     sane.init()
     device = os.environ.get("SCANNER_DEVICE", "").strip()
-    dev, names, last = None, {}, None
+    dev, names, last, opened_at = None, {}, None, 0.0
 
     while RUNNING:
         try:
+            if dev is not None and RECONNECT_INTERVAL > 0 \
+                    and time.monotonic() - opened_at > RECONNECT_INTERVAL:
+                LOG.debug("Reopening idle connection")
+                dev.close()
+                dev = None
             if dev is None:
                 device, dev = open_device(device)
+                opened_at = time.monotonic()
                 names, available = source_names(dev)
                 LOG.info("Available sources: %s", available)
                 LOG.info("Ready - waiting for a scan to be started on the printer")
