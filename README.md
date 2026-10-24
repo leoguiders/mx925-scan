@@ -73,6 +73,8 @@ git push origin v1.0.0
 | `POLL_INTERVAL` | `1` | Seconds between button polls |
 | `COOLDOWN` | `5` | Seconds after a scan before polling resumes |
 | `SETTLE_DELAY` | `2` | Seconds between closing the polling connection and starting scanimage |
+| `STALL_TIMEOUT` | `300` | Cancel a running scan if the printer delivers no image data for N seconds; complete pages are kept |
+| `SCAN_TIMEOUT` | `3600` | Upper limit for a single scan in seconds |
 | `RETRIES` / `RETRY_DELAY` | `2` / `10` | Retries on BJNP connection errors |
 | `RECONNECT_INTERVAL` | `1800` | Reopen the idle polling connection every N seconds (`0` = never) |
 | `SCANIMAGE_DEBUG` | `0` | `1` = write the full pixma/BJNP trace of every scanimage run to `DEBUG_DIR` |
@@ -148,7 +150,7 @@ sudo apt install tcpdump
 sudo tcpdump -i any -nn -s 0 host <printer-ip> -C 50 -W 10 -w /var/tmp/mx925.pcap
 ```
 
-Open the capture in Wireshark (display filter `bjnp`, or `udp.port == 8612 || tcp.port == 8612`) and compare it with the trace file written for the failing scan. Things to look for: TCP retransmissions or resets (packet loss / Wi-Fi), the printer advertising a zero TCP window (busy), long gaps before the printer's reply (slow printer), or requests from another host.
+Open the capture in Wireshark (display filter `bjnp`, or `udp.port == 8612 || tcp.port == 8612`) and compare it with the trace file written for the failing scan. If the network is fine (replies within milliseconds, no retransmissions) but the printer keeps answering "no data" for minutes, the printer itself is stalling - the watchdog (`STALL_TIMEOUT`) then cancels the job cleanly. Other things to look for: TCP retransmissions or resets (packet loss / Wi-Fi), the printer advertising a zero TCP window (busy), long gaps before the printer's reply (slow printer), or requests from another host.
 
 ## Notes and limitations
 

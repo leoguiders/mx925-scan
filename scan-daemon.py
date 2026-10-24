@@ -606,6 +606,17 @@ def main():
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
+    try:
+        ver = subprocess.run(["scanimage", "-V"], capture_output=True, text=True,
+                             timeout=10).stdout.strip()
+        commit = Path("/usr/local/share/sane-commit.txt")
+        LOG.info("%s%s", ver, f" (commit {commit.read_text().split()[0][:10]})"
+                 if commit.exists() else "")
+    except Exception as e:
+        LOG.warning("Could not determine SANE version: %s", e)
+    if os.environ.get("PIXMA_POLL_DELAY_MS"):
+        LOG.info("PIXMA_POLL_DELAY_MS=%s", os.environ["PIXMA_POLL_DELAY_MS"])
+
     sane.init()
     device = os.environ.get("SCANNER_DEVICE", "").strip()
     dev, names, last, opened_at = None, {}, None, 0.0

@@ -12,7 +12,8 @@ services:
       SCANNER_IP: 192.168.1.50          # IP of the printer (use a DHCP reservation)
       # SCANNER_DEVICE: "pixma:MX920_192.168.1.50"  # optional, auto-detected otherwise
       # BJNP_TIMEOUT: "30000"           # ms, default 30000
-      SCAN_USER: scan                   # shown on the printer as "<user>  <hostname>"
+      # PIXMA_POLL_DELAY_MS: "100"      # delay between image data polls (default 10)
+      SCAN_USER: scan                  # shown on the printer as "<user>  <hostname>"
       SCAN_HOSTNAME: paperless          # (max. ~30 characters together)
       OUTPUT_DIR: /output
       PUID: 1000                        # UID/GID of the paperless user
