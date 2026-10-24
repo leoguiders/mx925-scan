@@ -52,10 +52,16 @@ RUN apt-get update \
 
 COPY --from=sane /out/usr/local /usr/local
 COPY --from=shim /src/libhostname-shim.so /usr/local/lib/libhostname-shim.so
-RUN ldconfig \
- && scanimage -V \
- && ldd "$(python3 -c 'import _sane; print(_sane.__file__)')" | grep -q '/usr/local/lib/libsane.so.1' \
- || (echo "python3-sane does not use the self-built libsane" >&2; exit 1)
+
+# Remove Debian's libsane and backends, so only the self-built SANE can load
+RUN rm -rf /usr/lib/*-linux-gnu/libsane.so* /usr/lib/*-linux-gnu/sane \
+ && ldconfig
+
+# Sanity checks, one per step so a failure shows up clearly in the build log
+RUN ldd /usr/local/bin/scanimage /usr/local/lib/sane/libsane-pixma.so.1 | grep "not found" \
+      && { echo "missing libraries (see above)" >&2; exit 1; } || true
+RUN scanimage -V
+RUN python3 -c "import sane; print('python-sane', sane.init())"
 
 WORKDIR /app
 COPY scan-daemon.py config.yaml entrypoint.sh /app/
