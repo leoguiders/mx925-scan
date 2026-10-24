@@ -65,6 +65,8 @@ git push origin v1.0.0
 | `SCANNER_IP` | – | IP address of the printer |
 | `SCANNER_DEVICE` | auto | SANE device name, e.g. `pixma:MX920_192.168.1.50` |
 | `BJNP_TIMEOUT` | `30000` | BJNP timeout in ms. The MX925 sometimes needs more than the SANE default of 10 s on scan start. |
+| `SCAN_USER` | – | User name shown on the printer's panel (default: `root`) |
+| `SCAN_HOSTNAME` | – | Host name shown on the printer's panel (default: the server's hostname) |
 | `OUTPUT_DIR` | `/output` | Output directory inside the container |
 | `PUID` / `PGID` | – | Owner of the created files (e.g. the paperless user) |
 | `LOG_LEVEL` | `INFO` | `DEBUG` shows sensor changes and scanimage output |
@@ -72,6 +74,7 @@ git push origin v1.0.0
 | `COOLDOWN` | `5` | Seconds after a scan before polling resumes |
 | `SETTLE_DELAY` | `2` | Seconds between closing the polling connection and starting scanimage |
 | `RETRIES` / `RETRY_DELAY` | `2` / `10` | Retries on BJNP connection errors |
+| `RECONNECT_INTERVAL` | `1800` | Reopen the idle polling connection every N seconds (`0` = never) |
 | `RAW_EVENTS` | `1` | Capture the raw event packet (`0` = SANE values only) |
 
 ### config.yaml
@@ -137,7 +140,8 @@ On another PIXMA model, set `LOG_LEVEL: DEBUG`, change one panel setting at a ti
 
 - **Duplex back sides.** The MX925 always delivers back sides rotated by 180°. With *long edge* binding the daemon rotates them back. With *short edge* binding they are left as scanned, because on such documents the back is printed upside down.
 - **Image corrections.** `scanimage` cannot apply them, so the daemon reproduces them with Pillow. Results will look similar to Canon's driver, not identical.
-- **Multi-page flatbed scans.** Each press of the start button produces one file. The Windows driver keeps the job open and lets the panel ask "scan next page / finish". SANE does not implement that part of the protocol.
+- **Multi-page flatbed scans.** Each press of the start button produces one file. The Windows driver keeps the job open and lets the panel ask "scan next page / finish". SANE does not implement that part of the protocol. See [ROADMAP.md](ROADMAP.md).
+- **Name on the printer's panel.** The pixma backend sends `"<user>  <hostname>"` (process user and `gethostname()`), max. 31 characters. With host networking a container cannot have its own hostname, so `SCAN_HOSTNAME` is applied through a small `LD_PRELOAD` shim (`hostname-shim.c`), and `SCAN_USER` through an extra `/etc/passwd` entry for the process UID.
 - **Exclusive access.** While the container is connected, other computers cannot scan via the network. Printing is not affected.
 - **"PCScanning" / "Previous scan attempt was not completed".** The printer is stuck in an unfinished job. Press *Stop* or power-cycle the printer. Starting a scan on an empty ADF can cause this, which is why the source is taken from the panel instead of being probed.
 - **Auto scan size.** The daemon scans the full flatbed area and crops to the content. Several photos at once end up in one image, and skewed photos are not straightened.

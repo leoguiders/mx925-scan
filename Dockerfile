@@ -1,3 +1,12 @@
+# --- Build the gethostname() shim (see hostname-shim.c) ---------------------
+FROM debian:trixie-slim AS shim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends gcc libc6-dev \
+ && rm -rf /var/lib/apt/lists/*
+COPY hostname-shim.c /src/
+RUN gcc -O2 -Wall -Werror -shared -fPIC -o /src/libhostname-shim.so /src/hostname-shim.c -ldl
+
+# --- Runtime image -----------------------------------------------------------
 FROM debian:trixie-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -8,6 +17,8 @@ RUN apt-get update \
       sane-utils python3 python3-sane python3-yaml python3-pil python3-img2pdf \
       tini tzdata \
  && rm -rf /var/lib/apt/lists/*
+
+COPY --from=shim /src/libhostname-shim.so /usr/local/lib/libhostname-shim.so
 
 WORKDIR /app
 COPY scan-daemon.py config.yaml entrypoint.sh /app/
