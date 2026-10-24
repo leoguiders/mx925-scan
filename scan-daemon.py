@@ -37,6 +37,10 @@ SETTLE_DELAY = float(os.environ.get("SETTLE_DELAY", "2"))
 # On BJNP connection errors: delay and number of retries
 RETRY_DELAY = float(os.environ.get("RETRY_DELAY", "10"))
 RETRIES = int(os.environ.get("RETRIES", "2"))
+# Watchdog for running scans (seconds): cancel if the printer delivers no
+# image data for STALL_TIMEOUT, or if the whole scan exceeds SCAN_TIMEOUT
+STALL_TIMEOUT = float(os.environ.get("STALL_TIMEOUT", "300"))
+SCAN_TIMEOUT = float(os.environ.get("SCAN_TIMEOUT", "3600"))
 IO_ERRORS = ("Error during device I/O", "Can not connect", "sane_read: Invalid argument",
              "sane_start: Invalid argument")
 # Reopen the idle polling connection periodically (seconds, 0 = never) in
@@ -252,16 +256,20 @@ def run_scan(device, source, s, workdir):
     if debug:
         env["SANE_DEBUG_PIXMA"] = os.environ.get("SCANIMAGE_DEBUG_LEVEL", "11")
     t0 = time.monotonic()
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=900, env=env)
-    err = res.stderr or ""
+    errfile = Path(str(workdir) + ".stderr")
+    with open(errfile, "w") as ef:
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=ef,
+                                text=True, env=env)
+        aborted = _watch_scan(proc, Path(workdir), t0)
+    err = errfile.read_text(errors="replace")
     if debug:
         ddir = Path(os.environ.get("DEBUG_DIR", "/config/debug"))
         ddir.mkdir(parents=True, exist_ok=True)
         dfile = ddir / datetime.datetime.now().strftime("scanimage_%Y-%m-%d_%H-%M-%S.log")
-        dfile.write_text(f"# {' '.join(cmd)}\n# exit={res.returncode} "
-                         f"duration={time.monotonic() - t0:.1f}s\n{err}")
+        dfile.write_text(f"# {' '.join(cmd)}\n# exit={proc.returncode} "
+                         f"duration={time.monotonic() - t0:.1f}s aborted={aborted}\n{err}")
         LOG.info("scanimage trace: %s (%.1f s, exit %d)",
-                 dfile, time.monotonic() - t0, res.returncode)
+                 dfile, time.monotonic() - t0, proc.returncode)
         err = "\n".join(l for l in err.splitlines()
                         if "[pixma]" not in l and "[bjnp]" not in l or "ERROR" in l)
     if err.strip():
@@ -271,6 +279,14 @@ def run_scan(device, source, s, workdir):
     pages = [p for p in pages if p.stat().st_size > 1024]
     if "Previous scan attempt was not completed" in err:
         raise ScannerStuck()
+    if aborted:
+        # The page being scanned when we cancelled is incomplete; keep the rest.
+        # No retry: the printer just failed to deliver, retrying won't help.
+        if pages:
+            LOG.warning("Scan cancelled after %d page(s) - keeping the complete ones, "
+                        "please rescan the remaining pages", len(pages) - 1)
+            pages = pages[:-1]
+        return pages, False, False
     io_error = any(m in err for m in IO_ERRORS)
     if io_error and pages:
         # The page during which the connection broke may be incomplete
@@ -278,6 +294,47 @@ def run_scan(device, source, s, workdir):
         pages = pages[:-1]
     empty = "out of documents" in err.lower() and not pages
     return pages, io_error, empty
+
+
+def _dir_size(path):
+    try:
+        return sum(f.stat().st_size for f in path.iterdir() if f.is_file())
+    except OSError:
+        return 0
+
+
+def _watch_scan(proc, workdir, t0):
+    """Wait for scanimage; cancel it cleanly if the printer stops delivering.
+
+    STALL_TIMEOUT: no new image data for that many seconds -> cancel.
+    SCAN_TIMEOUT:  total runtime limit (safety net for very long jobs).
+    Cancelling sends SIGINT first, so scanimage calls sane_cancel() and the
+    printer gets an EndJob - a SIGKILL would leave it stuck in "scanning".
+    Returns True if the scan was cancelled by the watchdog.
+    """
+    last_size, last_change = -1, time.monotonic()
+    while proc.poll() is None:
+        time.sleep(2)
+        now = time.monotonic()
+        size = _dir_size(workdir)
+        if size != last_size:
+            last_size, last_change = size, now
+        stalled = now - last_change > STALL_TIMEOUT
+        too_long = now - t0 > SCAN_TIMEOUT
+        if not (stalled or too_long):
+            continue
+        LOG.error("Printer delivered no image data for %.0f s - cancelling scan" if stalled
+                  else "Scan exceeded %.0f s - cancelling",
+                  now - last_change if stalled else SCAN_TIMEOUT)
+        for sig, wait in ((signal.SIGINT, 60), (signal.SIGINT, 15), (signal.SIGKILL, 10)):
+            try:
+                proc.send_signal(sig)
+                proc.wait(wait)
+                break
+            except subprocess.TimeoutExpired:
+                LOG.warning("scanimage did not stop after %s", signal.Signals(sig).name)
+        return True
+    return False
 
 
 def is_blank(img, threshold):

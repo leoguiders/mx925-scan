@@ -75,6 +75,8 @@ git push origin v1.0.0
 | `SETTLE_DELAY` | `2` | Seconds between closing the polling connection and starting scanimage |
 | `RETRIES` / `RETRY_DELAY` | `2` / `10` | Retries on BJNP connection errors |
 | `RECONNECT_INTERVAL` | `1800` | Reopen the idle polling connection every N seconds (`0` = never) |
+| `SCANIMAGE_DEBUG` | `0` | `1` = write the full pixma/BJNP trace of every scanimage run to `DEBUG_DIR` |
+| `DEBUG_DIR` | `/config/debug` | Directory for scanimage traces |
 | `RAW_EVENTS` | `1` | Capture the raw event packet (`0` = SANE values only) |
 
 ### config.yaml
@@ -135,6 +137,18 @@ Example packet (ADF, duplex, long edge, A4, PDF, unsharp mask on):
 ```
 
 On another PIXMA model, set `LOG_LEVEL: DEBUG`, change one panel setting at a time, compare the `Event packet:` log lines, and adjust the rules.
+
+## Troubleshooting timeouts
+
+Enable `SCANIMAGE_DEBUG: "1"` and capture the network traffic on the Docker host at the same time (the container uses host networking, so the host sees every packet):
+
+```bash
+sudo apt install tcpdump
+# ring buffer: 10 files of 50 MB, runs until stopped
+sudo tcpdump -i any -nn -s 0 host <printer-ip> -C 50 -W 10 -w /var/tmp/mx925.pcap
+```
+
+Open the capture in Wireshark (display filter `bjnp`, or `udp.port == 8612 || tcp.port == 8612`) and compare it with the trace file written for the failing scan. Things to look for: TCP retransmissions or resets (packet loss / Wi-Fi), the printer advertising a zero TCP window (busy), long gaps before the printer's reply (slow printer), or requests from another host.
 
 ## Notes and limitations
 
