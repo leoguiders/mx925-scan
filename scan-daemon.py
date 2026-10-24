@@ -244,10 +244,26 @@ def run_scan(device, source, s, workdir):
         cmd += ["-y", str(s["page_height"])]
     cmd += [str(a) for a in (s.get("extra_args") or [])]
     LOG.info("Running: %s", " ".join(cmd))
-    # Debug output only in the daemon, not in scanimage (would be megabytes)
+    # Debug output only in the daemon, not in scanimage (would be megabytes),
+    # unless SCANIMAGE_DEBUG=1: then the full pixma/BJNP trace of scanimage is
+    # written to a file in DEBUG_DIR (for troubleshooting timeouts)
     env = {k: v for k, v in os.environ.items() if not k.startswith("SANE_DEBUG")}
+    debug = os.environ.get("SCANIMAGE_DEBUG", "0") == "1"
+    if debug:
+        env["SANE_DEBUG_PIXMA"] = os.environ.get("SCANIMAGE_DEBUG_LEVEL", "11")
+    t0 = time.monotonic()
     res = subprocess.run(cmd, capture_output=True, text=True, timeout=900, env=env)
     err = res.stderr or ""
+    if debug:
+        ddir = Path(os.environ.get("DEBUG_DIR", "/config/debug"))
+        ddir.mkdir(parents=True, exist_ok=True)
+        dfile = ddir / datetime.datetime.now().strftime("scanimage_%Y-%m-%d_%H-%M-%S.log")
+        dfile.write_text(f"# {' '.join(cmd)}\n# exit={res.returncode} "
+                         f"duration={time.monotonic() - t0:.1f}s\n{err}")
+        LOG.info("scanimage trace: %s (%.1f s, exit %d)",
+                 dfile, time.monotonic() - t0, res.returncode)
+        err = "\n".join(l for l in err.splitlines()
+                        if "[pixma]" not in l and "[bjnp]" not in l or "ERROR" in l)
     if err.strip():
         LOG.debug("scanimage: %s", err.strip())
     pages = sorted(Path(workdir).glob("p*.pnm"))
