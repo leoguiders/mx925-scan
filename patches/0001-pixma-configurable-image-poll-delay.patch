@@ -1,0 +1,45 @@
+diff --git a/backend/pixma/pixma_mp150.c b/backend/pixma/pixma_mp150.c
+index 5105e224..6cbadfca 100644
+--- a/backend/pixma/pixma_mp150.c
++++ b/backend/pixma/pixma_mp150.c
+@@ -1649,6 +1649,31 @@ mp150_scan (pixma_t * s)
+   return 0;
+ }
+ 
++/* Delay between image data polls while the scanner has no data yet.
++ * Defaults to 10 ms. Some network scanners (e.g. MX920/MX925 series over
++ * BJNP) stall for minutes when polled ~80 times per second, so the delay can
++ * be raised with the environment variable PIXMA_POLL_DELAY_MS (0..10000). */
++static unsigned
++mp150_poll_delay_us (void)
++{
++  static int delay_ms = -1;
++
++  if (delay_ms < 0)
++    {
++      const char *env = getenv ("PIXMA_POLL_DELAY_MS");
++      delay_ms = 10;
++      if (env && *env)
++        {
++          char *end;
++          long v = strtol (env, &end, 10);
++          if (*end == '\0' && v >= 0 && v <= 10000)
++            delay_ms = (int) v;
++        }
++      PDBG (pixma_dbg (3, "mp150: image poll delay %d ms\n", delay_ms));
++    }
++  return (unsigned) delay_ms * 1000;
++}
++
+ static int
+ mp150_fill_buffer (pixma_t * s, pixma_imagebuf_t * ib)
+ {
+@@ -1718,7 +1743,7 @@ mp150_fill_buffer (pixma_t * s, pixma_imagebuf_t * ib)
+ 
+       if (block_size == 0)
+         {     /* no image data at this moment. */
+-          pixma_sleep (10000);
++          pixma_sleep (mp150_poll_delay_us ());
+         }
+       /* Post-process the image data */
+       mp->data_left_ofs = mp->imgbuf + mp->data_left_len + bytes_received;

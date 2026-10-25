@@ -7,13 +7,13 @@ COPY hostname-shim.c /src/
 RUN gcc -O2 -Wall -Werror -shared -fPIC -o /src/libhostname-shim.so /src/hostname-shim.c -ldl
 
 # --- Build SANE (pixma backend only) from source -----------------------------
-# Debian ships an older SANE; current upstream has many BJNP fixes, and the
-# fork adds PIXMA_POLL_DELAY_MS. Override SANE_REPO / SANE_REF to use another
-# repository, branch, tag or commit.
+# Debian ships an older SANE; the current upstream master has many BJNP fixes
+# that are not in any release yet. The patches in patches/ are applied on top
+# (PIXMA_POLL_DELAY_MS). Override SANE_REF to pin a branch, tag or commit.
 FROM debian:trixie-slim AS sane
-ARG SANE_REPO=https://github.com/leoguiders/sane-backends.git
-ARG SANE_REF=mx925
-ARG SANE_VERSION=1.4.0-mx925
+ARG SANE_REPO=https://gitlab.com/sane-project/backends.git
+ARG SANE_REF=master
+ARG SANE_VERSION=1.4.0-git
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates git build-essential autoconf automake autoconf-archive \
@@ -23,6 +23,12 @@ RUN apt-get update \
 RUN git clone --depth 1 --branch "$SANE_REF" "$SANE_REPO" /src/sane \
  || (git clone "$SANE_REPO" /src/sane && git -C /src/sane checkout "$SANE_REF")
 WORKDIR /src/sane
+COPY patches/ /src/patches/
+RUN for p in /src/patches/*.patch; do \
+      [ -e "$p" ] || continue; \
+      echo "Applying $p"; \
+      git apply --verbose "$p" || { echo "Patch $p does not apply to $SANE_REF" >&2; exit 1; }; \
+    done
 RUN echo "$SANE_VERSION" > .tarball-version \
  && git log -1 --format='%H %s' > /src/sane-commit.txt \
  && ./autogen.sh \

@@ -56,6 +56,22 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
+### SANE from source
+
+The image does not use Debian's SANE package. It builds the `pixma` backend, `libsane` and `scanimage` from the current upstream `master` on [GitLab](https://gitlab.com/sane-project/backends): it contains many BJNP fixes that are not part of any release yet (Debian stable ships 1.3.1, the latest release is 1.4.0). The patches in `patches/` are applied on top:
+
+- `0001-pixma-configurable-image-poll-delay.patch` makes the delay between image data polls configurable (`PIXMA_POLL_DELAY_MS`, default 10 ms as upstream).
+
+Build arguments:
+
+| Argument | Default |
+|---|---|
+| `SANE_REPO` | `https://gitlab.com/sane-project/backends.git` |
+| `SANE_REF` | `master` (branch, tag or commit - pin a commit for reproducible builds) |
+| `SANE_VERSION` | `1.4.0-git` (version string reported by `scanimage -V`) |
+
+The daemon logs the SANE version and the upstream commit on start. If a patch no longer applies to the upstream code, the build fails with a clear message.
+
 ## Configuration
 
 ### Environment variables
@@ -65,13 +81,14 @@ git push origin v1.0.0
 | `SCANNER_IP` | – | IP address of the printer |
 | `SCANNER_DEVICE` | auto | SANE device name, e.g. `pixma:MX920_192.168.1.50` |
 | `BJNP_TIMEOUT` | `30000` | BJNP timeout in ms. The MX925 sometimes needs more than the SANE default of 10 s on scan start. |
+| `PIXMA_POLL_DELAY_MS` | `10` | Delay between image data polls while the printer has no data yet (patched SANE, see "SANE from source"). Try `100` if scans stall over the network. |
 | `SCAN_USER` | – | User name shown on the printer's panel (default: `root`) |
 | `SCAN_HOSTNAME` | – | Host name shown on the printer's panel (default: the server's hostname) |
 | `OUTPUT_DIR` | `/output` | Output directory inside the container |
 | `PUID` / `PGID` | – | Owner of the created files (e.g. the paperless user) |
 | `LOG_LEVEL` | `INFO` | `DEBUG` shows sensor changes and scanimage output |
 | `POLL_INTERVAL` | `1` | Seconds between button polls |
-| `COOLDOWN` | `5` | Seconds after a scan before polling resumes |
+| `COOLDOWN` | `2` | Seconds after a scan before polling resumes (image processing runs in the background) |
 | `SETTLE_DELAY` | `2` | Seconds between closing the polling connection and starting scanimage |
 | `STALL_TIMEOUT` | `300` | Cancel a running scan if the printer delivers no image data for N seconds; complete pages are kept |
 | `SCAN_TIMEOUT` | `3600` | Upper limit for a single scan in seconds |

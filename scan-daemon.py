@@ -11,6 +11,7 @@ paperless-ngx consume directory.
 import datetime
 import logging
 import os
+import queue
 import re
 import shutil
 import signal
@@ -31,7 +32,9 @@ LOG = logging.getLogger("mx925-scan")
 CONFIG_PATH = os.environ.get("CONFIG", "/config/config.yaml")
 OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", "/output"))
 POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "1"))
-COOLDOWN = float(os.environ.get("COOLDOWN", "5"))
+# Pause after a scan before polling the buttons again (processing runs in the
+# background, so this only gives the printer a moment to finish the job)
+COOLDOWN = float(os.environ.get("COOLDOWN", "2"))
 # Pause between closing the polling connection and starting scanimage
 SETTLE_DELAY = float(os.environ.get("SETTLE_DELAY", "2"))
 # On BJNP connection errors: delay and number of retries
@@ -553,44 +556,79 @@ def handle_trigger(device, names, cfg, sensors):
                   "Press 'Stop' on the printer or power-cycle it.")
 
 
-def _scan_candidates(device, names, s, candidates):
-    with tempfile.TemporaryDirectory() as tmp:
-        for cand in candidates:
-            source = names.get(cand) if cand in names else s["source"]
-            if source is None and cand == "duplex":
-                LOG.warning("No duplex feeder found - scanning simplex")
-                source = names.get("adf")
-            if not source:
-                continue
+# ------------------------------------------------------ Background processing
+# Image processing and PDF creation run in a worker thread, so the daemon can
+# reconnect and listen for the next button press right after scanimage ends.
+JOBS = queue.Queue()
 
-            for attempt in range(RETRIES + 1):
-                workdir = Path(tmp) / f"{cand}-{attempt}"
-                pages, io_error, empty = run_scan(device, source, s, workdir)
-                if pages:
-                    LOG.info("%d page(s) from '%s'", len(pages), source)
-                    images = prepare_pages(pages, s, "duplex" in source.lower())
-                    if images:
-                        deliver(build_output(images, s, Path(tmp) / "out"), s)
-                    else:
-                        LOG.warning("All pages blank - nothing saved")
-                    if io_error:
-                        LOG.warning("Scan was aborted by a connection error - "
-                                    "please rescan the remaining pages")
-                    return
-                if not io_error:
-                    break
-                if attempt < RETRIES:
-                    LOG.warning("Scanner not responding (BJNP) - retry %d/%d in %.0f s",
-                                attempt + 1, RETRIES, RETRY_DELAY)
-                    time.sleep(RETRY_DELAY)
 
-            if io_error:
-                # Do NOT fall back to the flatbed on connection errors
-                LOG.error("Scanner unreachable - scan aborted")
+def _worker():
+    while True:
+        job = JOBS.get()
+        try:
+            if job is None:
                 return
-            if empty:
-                LOG.info("Feeder '%s' is empty", source)
-        LOG.warning("Scan returned no pages")
+            pages, s, duplex, tmp = job
+            t0 = time.monotonic()
+            images = prepare_pages(pages, s, duplex)
+            if images:
+                deliver(build_output(images, s, Path(tmp) / "out"), s)
+                LOG.info("Processed %d page(s) in %.1f s", len(images), time.monotonic() - t0)
+            else:
+                LOG.warning("All pages blank - nothing saved")
+        except Exception:
+            LOG.exception("Processing failed")
+        finally:
+            if job is not None:
+                shutil.rmtree(job[3], ignore_errors=True)
+            JOBS.task_done()
+
+
+def _scan_candidates(device, names, s, candidates):
+    tmp = tempfile.mkdtemp(prefix="mx925-")
+    try:
+        if _scan_into(device, names, s, candidates, tmp):
+            tmp = None  # handed over to the worker, which deletes it
+    finally:
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _scan_into(device, names, s, candidates, tmp):
+    """Scan; returns True if pages were queued for processing."""
+    for cand in candidates:
+        source = names.get(cand) if cand in names else s["source"]
+        if source is None and cand == "duplex":
+            LOG.warning("No duplex feeder found - scanning simplex")
+            source = names.get("adf")
+        if not source:
+            continue
+
+        for attempt in range(RETRIES + 1):
+            workdir = Path(tmp) / f"{cand}-{attempt}"
+            pages, io_error, empty = run_scan(device, source, s, workdir)
+            if pages:
+                LOG.info("%d page(s) from '%s'", len(pages), source)
+                if io_error:
+                    LOG.warning("Scan was aborted by a connection error - "
+                                "please rescan the remaining pages")
+                JOBS.put((pages, s, "duplex" in source.lower(), tmp))
+                return True
+            if not io_error:
+                break
+            if attempt < RETRIES:
+                LOG.warning("Scanner not responding (BJNP) - retry %d/%d in %.0f s",
+                            attempt + 1, RETRIES, RETRY_DELAY)
+                time.sleep(RETRY_DELAY)
+
+        if io_error:
+            # Do NOT fall back to the flatbed on connection errors
+            LOG.error("Scanner unreachable - scan aborted")
+            return False
+        if empty:
+            LOG.info("Feeder '%s' is empty", source)
+    LOG.warning("Scan returned no pages")
+    return False
 
 
 # -------------------------------------------------------------------- Main
@@ -616,6 +654,9 @@ def main():
         LOG.warning("Could not determine SANE version: %s", e)
     if os.environ.get("PIXMA_POLL_DELAY_MS"):
         LOG.info("PIXMA_POLL_DELAY_MS=%s", os.environ["PIXMA_POLL_DELAY_MS"])
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    worker.start()
 
     sane.init()
     device = os.environ.get("SCANNER_DEVICE", "").strip()
@@ -674,6 +715,9 @@ def main():
     if dev:
         dev.close()
     sane.exit()
+    # Finish queued documents before exiting (docker stop waits 10 s by default)
+    JOBS.put(None)
+    worker.join(timeout=60)
     LOG.info("Stopped")
 
 
