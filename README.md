@@ -82,6 +82,12 @@ The daemon logs the SANE version and the upstream commit on start. If a patch no
 | `SCANNER_DEVICE` | auto | SANE device name, e.g. `pixma:MX920_192.168.1.50` |
 | `BJNP_TIMEOUT` | `30000` | BJNP timeout in ms. The MX925 sometimes needs more than the SANE default of 10 s on scan start. |
 | `PIXMA_POLL_DELAY_MS` | `10` | Delay between image data polls while the printer has no data yet (patched SANE, see "SANE from source"). Try `100` if scans stall over the network. |
+| `PAPERLESS_URL` | – | Base URL of paperless-ngx, e.g. `http://localhost:8000`; enables the deskew service (see below) |
+| `PAPERLESS_TOKEN` | – | paperless API token ("My profile" -> API auth token) |
+| `PAPERLESS_DESKEW_TAG` | `begradigen` | Tag that requests straightening |
+| `PAPERLESS_DESKEW_ERROR_TAG` | `begradigen-fehler` | Tag set when a document cannot be straightened |
+| `PAPERLESS_POLL_INTERVAL` | `60` | Seconds between checks for tagged documents |
+| `DESKEW_MAX_ANGLE` / `DESKEW_MIN_CONTRAST` | `10` / `3` | Search range and confidence threshold for the paperless deskew service |
 | `SCAN_USER` | – | User name shown on the printer's panel (default: `root`) |
 | `SCAN_HOSTNAME` | – | Host name shown on the printer's panel (default: the server's hostname) |
 | `OUTPUT_DIR` | `/output` | Output directory inside the container |
@@ -117,6 +123,7 @@ Main settings:
 | `duplex_rotate_back` | rotation of back sides in degrees |
 | `page_rotate` | rotation of all pages (counter-clockwise) |
 | `page_width` / `page_height` | scan area in mm; `null` = full area |
+| `deskew`, `deskew_max_angle`, `deskew_min_contrast` | straighten skewed pages (text or staff lines); off for photo sizes |
 | `auto_crop` | crop the flatbed scan to its content |
 | `format` | `pdf`, `tiff` (multi-page), `jpeg`, `png` (one file per page) |
 | `jpeg_quality` | JPEG quality for PDF and JPEG output |
@@ -156,6 +163,20 @@ Example packet (ADF, duplex, long edge, A4, PDF, unsharp mask on):
 ```
 
 On another PIXMA model, set `LOG_LEVEL: DEBUG`, change one panel setting at a time, compare the `Event packet:` log lines, and adjust the rules.
+
+## Straightening skewed pages
+
+New scans are straightened automatically (`deskew: true`). The skew angle is found with a projection profile: the page is rotated in small steps and the angle at which text lines or staff lines produce the sharpest horizontal peaks wins. Pages without clear lines (photos, nearly empty pages) are left as they are. The correction is a rotation of the whole page; warped copies (different skew at the top and bottom) are only corrected on average.
+
+### Documents already in paperless-ngx
+
+With `PAPERLESS_URL` and `PAPERLESS_TOKEN` set, the daemon also straightens documents that are already in paperless-ngx (version 3.0 or newer):
+
+1. In the paperless web UI, add the tag `begradigen` to one or more documents (bulk edit works too).
+2. Within a minute the daemon downloads the current original, straightens every skewed page and uploads the result as a **new version of the same document** (`POST /api/documents/{id}/update_version/`). ID, title, tags, correspondent, custom fields and notes stay unchanged; paperless runs OCR on the new version, and the previous version remains available in the document's version list.
+3. The tag is removed. If nothing was skewed, a note says so. Documents that cannot be processed (e.g. born-digital PDFs without scanned page images) get the tag `begradigen-fehler` and a note with the reason.
+
+Both tags are created automatically. The API token needs permission to change the documents.
 
 ## Troubleshooting timeouts
 

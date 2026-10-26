@@ -20,6 +20,10 @@ services:
       PGID: 1000
       TZ: Europe/Berlin
       LOG_LEVEL: INFO                   # DEBUG while setting up
+      # Straighten documents already in paperless-ngx (>= 3.0) by tagging them
+      # PAPERLESS_URL: http://localhost:8000
+      # PAPERLESS_TOKEN: <API token from "My profile" in paperless>
+      # PAPERLESS_DESKEW_TAG: begradigen
     volumes:
       - ./config:/config
       - /srv/paperless/consume:/output  # your paperless consume directory

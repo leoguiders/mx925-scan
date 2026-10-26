@@ -25,6 +25,9 @@ defaults:
   subdir: ""               # subfolder in the consume dir (-> paperless tag)
   page_width: 210          # scan area in mm (set from the panel, see below)
   page_height: 297         # leave empty = maximum area (e.g. long pages)
+  deskew: true             # straighten skewed pages (text / staff lines)
+  deskew_max_angle: 10     # search range in degrees
+  deskew_min_contrast: 3   # higher = only straighten pages with very clear lines
   auto_crop: false         # crop to content (panel: auto scan size)
   auto_crop_threshold: 225 # lower if light background gets included
   auto_crop_margin: 2      # margin in mm
@@ -73,11 +76,11 @@ rules:
   - when: { byte-0a: 3 }        # Legal (ADF only)
     set:  { page_width: 215.9, page_height: 355.6 }
   - when: { byte-0a: 8 }        # 10x15 cm (photo: no background whitening)
-    set:  { page_width: 100, page_height: 150, whiten_background: false }
+    set:  { page_width: 100, page_height: 150, whiten_background: false, deskew: false }
   - when: { byte-0a: 9 }        # 13x18 cm (photo: no background whitening)
-    set:  { page_width: 130, page_height: 180, whiten_background: false }
+    set:  { page_width: 130, page_height: 180, whiten_background: false, deskew: false }
   - when: { byte-0a: 11 }       # 0x0b = auto scan (usually photos)
-    set:  { page_width: null, page_height: null, auto_crop: true, whiten_background: false }
+    set:  { page_width: null, page_height: null, auto_crop: true, whiten_background: false, deskew: false }
   # ADF orientation (byte 0x10: 00 = flatbed, 01 = portrait, 02 = landscape)
   # Landscape: rotate pages by 90° - use 270 if the result is upside down
   - when: { byte-10: 1 }

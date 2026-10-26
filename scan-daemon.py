@@ -27,6 +27,9 @@ import sane
 import yaml
 from PIL import Image, ImageFilter, ImageOps
 
+import deskew
+import paperless_deskew
+
 LOG = logging.getLogger("mx925-scan")
 
 CONFIG_PATH = os.environ.get("CONFIG", "/config/config.yaml")
@@ -422,6 +425,12 @@ def prepare_pages(pages, s, duplex):
             continue
         if img.mode not in ("1", "L", "RGB"):
             img = img.convert("RGB")
+        if s.get("deskew"):
+            img, angle = deskew.deskew_image(
+                img, max_angle=float(s.get("deskew_max_angle", 10)),
+                min_contrast=float(s.get("deskew_min_contrast", 3)))
+            if angle is not None:
+                LOG.info("Page %d straightened by %+.2f°", i + 1, angle)
         if s.get("auto_crop"):
             img = auto_crop(img, int(s["resolution"]),
                             int(s.get("auto_crop_threshold", 225)),
@@ -657,6 +666,8 @@ def main():
 
     worker = threading.Thread(target=_worker, daemon=True)
     worker.start()
+    # Optional: straighten documents tagged in paperless-ngx
+    paperless_deskew.start_from_env()
 
     sane.init()
     device = os.environ.get("SCANNER_DEVICE", "").strip()
