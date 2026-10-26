@@ -39,7 +39,7 @@ Options, from quickest to best:
 ## Ideas
 
 - Split several photos on the flatbed into separate files (auto scan size)
-- ~~Deskew photos and documents~~ done (`deskew`, paperless tag `begradigen`)
+- Deskewing moved to the separate project paperless-deskew
 - Identify the remaining event packet bytes `0x0c` and `0x12`
 - Map further panel scan sizes (if the MX925 offers more than A4, Letter,
   Legal, 10×15, 13×18 and auto)

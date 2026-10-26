@@ -9,9 +9,13 @@ Works well for sheet music (staff lines) and text documents. Pages without
 clear lines (photos, almost empty pages) give a flat score curve; a minimum
 "contrast" (best score / median score) prevents rotating those at random.
 """
+import io
 import logging
+from pathlib import Path
 
+import img2pdf
 import numpy as np
+import pikepdf
 from PIL import Image, ImageOps
 
 LOG = logging.getLogger("mx925-scan")
@@ -75,3 +79,107 @@ def deskew_image(img, max_angle=10.0, min_angle=0.1, min_contrast=3.0):
     if img.mode == "1":
         out = out.point(lambda v: 255 if v > 127 else 0).convert("1")
     return out, angle
+
+
+# --------------------------------------------------------------- Whole files
+class Skip(Exception):
+    """Document cannot be straightened; the message is shown as a note."""
+
+
+def _pdf_pages(data):
+    """Yield (PIL image, dpi) for every page of a scanned PDF."""
+    pdf = pikepdf.open(io.BytesIO(data))
+    for n, page in enumerate(pdf.pages, 1):
+        images = list(page.images.values())
+        if len(images) != 1:
+            raise Skip(f"Seite {n} ist keine reine Scan-Seite "
+                       f"({len(images)} Bilder) - nichts geändert.")
+        img = pikepdf.PdfImage(images[0]).as_pil_image()
+        rot = int(page.obj.get("/Rotate", 0)) % 360
+        if rot:
+            img = img.rotate(-rot, expand=True)  # /Rotate is clockwise
+        box = [float(v) for v in page.mediabox]
+        w_pt, h_pt = abs(box[2] - box[0]), abs(box[3] - box[1])
+        if rot in (90, 270):
+            w_pt, h_pt = h_pt, w_pt
+        # The image must cover the page, otherwise it is e.g. a logo
+        if abs(img.width / img.height - w_pt / h_pt) > 0.03 * (w_pt / h_pt):
+            raise Skip(f"Seite {n} ist keine reine Scan-Seite - nichts geändert.")
+        yield img, img.width / (w_pt / 72.0)
+
+
+def _image_pages(data):
+    img = Image.open(io.BytesIO(data))
+    dpi = img.info.get("dpi", (300, 300))[0] or 300
+    for i in range(getattr(img, "n_frames", 1)):
+        img.seek(i)
+        yield img.copy(), float(dpi)
+
+
+def deskew_file(data, mime, name, max_angle=10.0, min_contrast=3.0, quality=90):
+    """Returns (bytes, filename, mime, angles) or None if nothing was skewed."""
+    if mime == "application/pdf":
+        pages = list(_pdf_pages(data))
+    elif mime in ("image/jpeg", "image/png", "image/tiff"):
+        pages = list(_image_pages(data))
+    else:
+        raise Skip(f"Dateityp {mime} wird nicht unterstützt - nichts geändert.")
+
+    out, angles = [], []
+    for img, dpi in pages:
+        if img.mode not in ("1", "L", "RGB"):
+            img = img.convert("RGB")
+        fixed, angle = deskew_image(img, max_angle=max_angle,
+                                    min_contrast=min_contrast)
+        out.append((fixed, dpi))
+        angles.append(angle)
+    if all(a is None for a in angles):
+        return None
+
+    stem = Path(name or "document").stem
+    if mime == "application/pdf":
+        parts = []
+        for img, dpi in out:
+            buf = io.BytesIO()
+            d = (round(dpi), round(dpi))
+            if img.mode == "1":
+                img.save(buf, "PNG", dpi=d)
+            else:
+                img.save(buf, "JPEG", quality=quality, dpi=d)
+            parts.append(buf.getvalue())
+        return _reproducible_pdf(parts), f"{stem}.pdf", mime, angles
+
+    buf = io.BytesIO()
+    fmt = {"image/jpeg": "JPEG", "image/png": "PNG", "image/tiff": "TIFF"}[mime]
+    imgs = [i for i, _ in out]
+    d = (round(out[0][1]),) * 2
+    if fmt == "TIFF":
+        imgs[0].save(buf, fmt, save_all=True, append_images=imgs[1:],
+                     compression="tiff_lzw", dpi=d)
+    elif fmt == "JPEG":
+        imgs[0].save(buf, fmt, quality=quality, dpi=d)
+    else:
+        imgs[0].save(buf, fmt, dpi=d)
+    ext = {"JPEG": ".jpg", "PNG": ".png", "TIFF": ".tiff"}[fmt]
+    return buf.getvalue(), f"{stem}{ext}", mime, angles
+
+
+def _reproducible_pdf(images):
+    """img2pdf output without date and with a content-derived /ID.
+
+    The same input must always give the same bytes: paperless warns that a
+    non-deterministic pre-consume hook can let duplicate documents slip in.
+    """
+    pdf = pikepdf.open(io.BytesIO(img2pdf.convert(images, nodate=True)))
+    if "/ID" in pdf.trailer:
+        del pdf.trailer.ID  # random; regenerated from the content below
+    buf = io.BytesIO()
+    pdf.save(buf, deterministic_id=True)
+    return buf.getvalue()
+
+
+def _label(angles):
+    done = [a for a in angles if a is not None]
+    if len(angles) == 1:
+        return f"Begradigt ({done[0]:+.2f}°)"
+    return f"Begradigt ({len(done)}/{len(angles)} Seiten, max {max(map(abs, done)):.1f}°)"

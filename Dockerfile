@@ -53,7 +53,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       python3 python3-sane python3-yaml python3-pil python3-img2pdf \
-      python3-numpy python3-pikepdf python3-requests \
       libusb-1.0-0 libjpeg62-turbo tini tzdata \
  && rm -rf /var/lib/apt/lists/*
 
@@ -71,9 +70,8 @@ RUN scanimage -V
 RUN python3 -c "import sane; print('python-sane', sane.init())"
 
 WORKDIR /app
-COPY scan-daemon.py deskew.py paperless_deskew.py config.yaml entrypoint.sh /app/
-RUN chmod +x /app/entrypoint.sh /app/scan-daemon.py \
- && cd /app && python3 -c "import deskew, paperless_deskew"
+COPY scan-daemon.py config.yaml entrypoint.sh /app/
+RUN chmod +x /app/entrypoint.sh /app/scan-daemon.py
 
 # Unhealthy if the polling loop has not touched the heartbeat for 2 minutes
 HEALTHCHECK --interval=60s --timeout=5s --start-period=60s \
