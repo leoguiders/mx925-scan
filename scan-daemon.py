@@ -9,6 +9,7 @@ settings via config.yaml. The result is written to an output folder, e.g. the
 paperless-ngx consume directory.
 """
 import datetime
+import json
 import logging
 import os
 import queue
@@ -51,13 +52,81 @@ IO_ERRORS = ("Error during device I/O", "Can not connect", "sane_read: Invalid a
 RECONNECT_INTERVAL = float(os.environ.get("RECONNECT_INTERVAL", "1800"))
 PUID = os.environ.get("PUID")
 PGID = os.environ.get("PGID")
-HEARTBEAT = Path("/tmp/heartbeat")
+HEALTH_FILE = Path(os.environ.get("HEALTH_FILE", "/tmp/health.json"))
+# Image processing of one document taking longer than this (seconds) counts
+# as a hung worker
+PROCESSING_TIMEOUT = float(os.environ.get("PROCESSING_TIMEOUT", "1800"))
+# Back-off while the printer is unreachable (switched off, asleep, offline)
+UNREACHABLE_DELAYS = (10, 30, 60)
 
 # Read-only options of the pixma backend that the printer fills on scan start
 SENSORS = ("button-1", "button-2", "target", "original", "scan-resolution",
            "document-type", "adf-status", "adf-orientation")
 
 RUNNING = True
+
+
+# ------------------------------------------------------------------ Health
+class Health:
+    """State for the Docker health check (written to HEALTH_FILE).
+
+    A printer that is switched off or unreachable is a normal condition and
+    does NOT make the container unhealthy. Only real problems do: the main
+    loop or the processing worker is stuck or dead, the output directory is
+    not writable, config.yaml cannot be read, processing a scan failed, or
+    an unexpected internal error occurred. healthcheck.py evaluates the file.
+    """
+
+    def __init__(self, path):
+        self.path = path
+        self.lock = threading.Lock()
+        self.printer = "starting"
+        self.since = time.time()
+        self.problems = {}  # name -> (message, expires_at or None)
+        self._written = 0.0
+        self._last = None
+
+    def beat(self, printer=None):
+        """Called from the main loop (and while scanning) to prove liveness."""
+        with self.lock:
+            if printer and printer != self.printer:
+                self.printer, self.since = printer, time.time()
+            self._write()
+
+    def problem(self, name, message, ttl=None):
+        with self.lock:
+            entry = (str(message), time.time() + ttl if ttl else None)
+            if self.problems.get(name, (None,))[0] != entry[0]:
+                LOG.error("Health problem [%s]: %s", name, message)
+            self.problems[name] = entry
+            self._write()
+
+    def clear(self, name):
+        with self.lock:
+            if self.problems.pop(name, None) is not None:
+                LOG.info("Health problem [%s] resolved", name)
+                self._write()
+
+    def _write(self):
+        now = time.time()
+        for name, (_, exp) in list(self.problems.items()):
+            if exp and exp < now:
+                del self.problems[name]
+        state = {"printer": self.printer, "since": int(self.since),
+                 "problems": {k: v[0] for k, v in self.problems.items()}}
+        # Rewrite only on changes or every 15 s (the check looks at the mtime)
+        if state == self._last and now - self._written < 15:
+            return
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        try:
+            tmp.write_text(json.dumps(dict(state, time=int(now))))
+            os.replace(tmp, self.path)
+            self._written, self._last = now, state
+        except OSError as e:
+            LOG.warning("Cannot write %s: %s", self.path, e)
+
+
+HEALTH = Health(HEALTH_FILE)
 
 
 def _stop(*_):
@@ -318,6 +387,7 @@ def _watch_scan(proc, workdir, t0):
     last_size, last_change = -1, time.monotonic()
     while proc.poll() is None:
         time.sleep(2)
+        HEALTH.beat("scanning")
         now = time.monotonic()
         size = _dir_size(workdir)
         if size != last_size:
@@ -560,11 +630,14 @@ def handle_trigger(device, names, cfg, sensors):
 # Image processing and PDF creation run in a worker thread, so the daemon can
 # reconnect and listen for the next button press right after scanimage ends.
 JOBS = queue.Queue()
+WORKER_BUSY_SINCE = None  # monotonic start of the job being processed
 
 
 def _worker():
+    global WORKER_BUSY_SINCE
     while True:
         job = JOBS.get()
+        WORKER_BUSY_SINCE = time.monotonic()
         try:
             if job is None:
                 return
@@ -576,9 +649,13 @@ def _worker():
                 LOG.info("Processed %d page(s) in %.1f s", len(images), time.monotonic() - t0)
             else:
                 LOG.warning("All pages blank - nothing saved")
-        except Exception:
+            HEALTH.clear("processing")
+        except Exception as e:
             LOG.exception("Processing failed")
+            # Stays until the next scan is processed successfully (max. 24 h)
+            HEALTH.problem("processing", f"processing a scan failed: {e}", ttl=86400)
         finally:
+            WORKER_BUSY_SINCE = None
             if job is not None:
                 shutil.rmtree(job[3], ignore_errors=True)
             JOBS.task_done()
@@ -632,6 +709,52 @@ def _scan_into(device, names, s, candidates, tmp):
 
 
 # -------------------------------------------------------------------- Main
+def _sleep(seconds):
+    """Sleep, but wake up promptly on SIGTERM."""
+    end = time.monotonic() + seconds
+    while RUNNING and time.monotonic() < end:
+        time.sleep(min(1.0, end - time.monotonic()))
+
+
+_config_mtime = None
+
+
+def check_operation(worker):
+    """Checks that do not depend on the printer (run about once a minute)."""
+    global _config_mtime
+    # Processing worker alive and not hung
+    if not worker.is_alive():
+        HEALTH.problem("worker", "processing thread has died")
+    else:
+        busy = WORKER_BUSY_SINCE
+        if busy is not None and time.monotonic() - busy > PROCESSING_TIMEOUT:
+            HEALTH.problem("worker", "processing a scan takes longer than "
+                           f"{PROCESSING_TIMEOUT:.0f} s - hung?")
+        else:
+            HEALTH.clear("worker")
+    # Output directory writable
+    if not OUTPUT_DIR.is_dir():
+        HEALTH.problem("output", f"{OUTPUT_DIR} does not exist")
+    elif not os.access(OUTPUT_DIR, os.W_OK | os.X_OK):
+        HEALTH.problem("output", f"{OUTPUT_DIR} is not writable")
+    else:
+        HEALTH.clear("output")
+    # config.yaml readable and valid (re-checked when it changes)
+    try:
+        mtime = os.stat(CONFIG_PATH).st_mtime
+    except OSError as e:
+        HEALTH.problem("config", f"cannot read {CONFIG_PATH}: {e}")
+        _config_mtime = None
+        return
+    if mtime != _config_mtime:
+        try:
+            load_config()
+            HEALTH.clear("config")
+            _config_mtime = mtime
+        except Exception as e:
+            HEALTH.problem("config", f"invalid {CONFIG_PATH}: {e}")
+
+
 def main():
     capture = None
     if os.environ.get("RAW_EVENTS", "1") == "1":
@@ -657,12 +780,22 @@ def main():
 
     worker = threading.Thread(target=_worker, daemon=True)
     worker.start()
+    HEALTH.beat("starting")
 
     sane.init()
     device = os.environ.get("SCANNER_DEVICE", "").strip()
     dev, names, last, opened_at = None, {}, None, 0.0
+    failures, down_since, next_check = 0, None, 0.0
 
     while RUNNING:
+        # --- Operational checks (independent of the printer) ---------------
+        if time.monotonic() >= next_check:
+            next_check = time.monotonic() + 60
+            check_operation(worker)
+
+        # --- Printer connection and button polling --------------------------
+        # Any failure here means "printer not reachable" - expected when it
+        # is switched off, so it is logged once and retried with a back-off.
         try:
             if dev is not None and RECONNECT_INTERVAL > 0 \
                     and time.monotonic() - opened_at > RECONNECT_INTERVAL:
@@ -674,43 +807,72 @@ def main():
                 opened_at = time.monotonic()
                 names, available = source_names(dev)
                 LOG.info("Available sources: %s", available)
-                LOG.info("Ready - waiting for a scan to be started on the printer")
-
             sensors = read_sensors(dev)
-            HEARTBEAT.touch()
-            if sensors != last:
-                LOG.debug("Sensors: %s", sensors)
-                last = sensors
-
-            if sensors.get("button-1") or sensors.get("button-2"):
-                LOG.info("Scan started on printer - values: %s", sensors)
-                if capture:
-                    pkt = capture.get(1.0)
-                    if pkt:
-                        sensors["_intr"] = pkt
-                        LOG.info("Event packet: %s", " ".join(
-                            f"{b:02x}" for b in pkt[:32]))
-                    else:
-                        LOG.warning("No event packet captured")
-                cfg = load_config()  # pick up changes without a restart
-                dev.close()          # scanimage needs exclusive access
-                dev = None
-                handle_trigger(device, names, cfg, sensors)
-                if capture:
-                    capture.clear()
-                time.sleep(COOLDOWN)
-                continue
         except Exception as e:
-            LOG.warning("Error: %s - retrying in 10 s", e)
             try:
                 if dev:
                     dev.close()
             except Exception:
                 pass
             dev = None
-            time.sleep(10)
+            delay = UNREACHABLE_DELAYS[min(failures, len(UNREACHABLE_DELAYS) - 1)]
+            failures += 1
+            if down_since is None:
+                down_since = time.monotonic()
+                LOG.warning("Printer not reachable (%s) - switched off? "
+                            "Retrying in the background", e)
+            else:
+                LOG.debug("Printer still not reachable (%s) - retrying in %d s", e, delay)
+            HEALTH.beat("unreachable")
+            _sleep(delay)
             continue
-        time.sleep(POLL_INTERVAL)
+
+        if down_since is not None:
+            LOG.info("Printer reachable again (after %s)",
+                     datetime.timedelta(seconds=int(time.monotonic() - down_since)))
+        if failures or last is None:
+            LOG.info("Ready - waiting for a scan to be started on the printer")
+        failures, down_since = 0, None
+        HEALTH.beat("connected")
+        if sensors != last:
+            LOG.debug("Sensors: %s", sensors)
+            last = sensors
+
+        # --- Scan started on the printer ------------------------------------
+        if sensors.get("button-1") or sensors.get("button-2"):
+            LOG.info("Scan started on printer - values: %s", sensors)
+            if capture:
+                pkt = capture.get(1.0)
+                if pkt:
+                    sensors["_intr"] = pkt
+                    LOG.info("Event packet: %s", " ".join(
+                        f"{b:02x}" for b in pkt[:32]))
+                else:
+                    LOG.warning("No event packet captured")
+            try:
+                cfg = load_config()  # pick up changes without a restart
+                HEALTH.clear("config")
+            except Exception as e:
+                HEALTH.problem("config", f"cannot read {CONFIG_PATH}: {e}")
+                LOG.error("Scan ignored - fix the configuration first")
+                cfg = None
+            if cfg is not None:
+                try:
+                    dev.close()  # scanimage needs exclusive access
+                except Exception:
+                    pass
+                dev = None
+                try:
+                    handle_trigger(device, names, cfg, sensors)
+                    HEALTH.clear("internal")
+                except Exception as e:
+                    LOG.exception("Unexpected error while scanning")
+                    HEALTH.problem("internal", f"unexpected error: {e}", ttl=900)
+            if capture:
+                capture.clear()
+            _sleep(COOLDOWN)
+            continue
+        _sleep(POLL_INTERVAL)
 
     if dev:
         dev.close()

@@ -70,11 +70,12 @@ RUN scanimage -V
 RUN python3 -c "import sane; print('python-sane', sane.init())"
 
 WORKDIR /app
-COPY scan-daemon.py config.yaml entrypoint.sh /app/
-RUN chmod +x /app/entrypoint.sh /app/scan-daemon.py
+COPY scan-daemon.py healthcheck.py config.yaml entrypoint.sh /app/
+RUN chmod +x /app/entrypoint.sh /app/scan-daemon.py /app/healthcheck.py
 
-# Unhealthy if the polling loop has not touched the heartbeat for 2 minutes
-HEALTHCHECK --interval=60s --timeout=5s --start-period=60s \
-  CMD test $(( $(date +%s) - $(stat -c %Y /tmp/heartbeat) )) -lt 120 || exit 1
+# Unhealthy only on real operational problems (see healthcheck.py). A printer
+# that is switched off or unreachable is reported, but stays healthy.
+HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 \
+  CMD python3 /app/healthcheck.py
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/entrypoint.sh"]

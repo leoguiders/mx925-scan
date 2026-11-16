@@ -97,6 +97,8 @@ The daemon logs the SANE version and the upstream commit on start. If a patch no
 | `SCANIMAGE_DEBUG` | `0` | `1` = write the full pixma/BJNP trace of every scanimage run to `DEBUG_DIR` |
 | `DEBUG_DIR` | `/config/debug` | Directory for scanimage traces |
 | `RAW_EVENTS` | `1` | Capture the raw event packet (`0` = SANE values only) |
+| `PROCESSING_TIMEOUT` | `1800` | Processing a single scan longer than N seconds is reported as a hung worker (health check) |
+| `HEALTH_MAX_AGE` | `300` | The health check fails if the main loop has not reported for N seconds |
 
 ### config.yaml
 
@@ -128,6 +130,26 @@ Main settings:
 | `filename` | strftime pattern for the output file name |
 | `subdir` | subfolder of the output dir (with `PAPERLESS_CONSUMER_SUBDIRS_AS_TAGS=true` → tag) |
 | `extra_args` | additional `scanimage` arguments |
+
+### Health check
+
+The container's health status reflects problems of the daemon itself, not the availability of the printer. A printer that is switched off, asleep or offline is a normal condition: the daemon logs it once (`Printer not reachable ... retrying in the background`), retries every 10 → 30 → 60 s, logs `Printer reachable again` when it is back, and the container stays **healthy**.
+
+The container becomes **unhealthy** when
+
+- the main loop is stuck or has died (no update for `HEALTH_MAX_AGE` seconds; long-running scans keep reporting),
+- the output directory is missing or not writable,
+- `config.yaml` cannot be read or is invalid,
+- processing a scan failed (cleared by the next successful scan, at the latest after 24 h),
+- the processing worker has died or takes longer than `PROCESSING_TIMEOUT`,
+- an unexpected internal error occurred during a scan (cleared after 15 minutes).
+
+The current state, including whether the printer is reachable:
+
+```bash
+docker inspect --format '{{json .State.Health}}' mx925-scan | python3 -m json.tool
+docker compose exec mx925-scan python3 /app/healthcheck.py
+```
 
 ## MX925 event packet
 
