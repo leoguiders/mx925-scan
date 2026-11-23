@@ -12,7 +12,9 @@ RUN gcc -O2 -Wall -Werror -shared -fPIC -o /src/libhostname-shim.so /src/hostnam
 # (PIXMA_POLL_DELAY_MS). Override SANE_REF to pin a branch, tag or commit.
 FROM debian:trixie-slim AS sane
 ARG SANE_REPO=https://gitlab.com/sane-project/backends.git
-ARG SANE_REF=master
+# Pinned to the parent of 728fe6ae: that commit breaks BJNP scanner detection
+# ("scanner id length invalid or packet too short"). Move forward once fixed upstream.
+ARG SANE_REF=b2268a787797a308c1bf53ef4036626a8c0e3bc9
 ARG SANE_VERSION=1.4.0-git
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
